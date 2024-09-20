@@ -1,0 +1,178 @@
+import cv2
+import face_recognition
+import picamera
+import time
+import RPi.GPIO as GPIO
+import requests
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from datetime import datetime
+from mfrc522 import SimpleMFRC522
+
+# Disable GPIO warnings
+GPIO.setwarnings(False)
+
+# ThingSpeak configuration
+CHANNEL_ID = "2545305"
+WRITE_API_KEY = "E3QWYYUIVZLRRHPQ"
+fieldid_1 = 1
+fieldid_2 = 2
+fieldid_3 = 3
+fieldid_4 = 4
+payload = {"api_key": WRITE_API_KEY}
+
+# GPIO setup for servo motor
+GPIO.setmode(GPIO.BCM)
+servo_pin = 18
+GPIO.setup(servo_pin, GPIO.OUT)
+p = GPIO.PWM(servo_pin, 50)
+p.start(5)
+
+# Email configuration
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 587
+SENDER_EMAIL = 'yashonathbayyavarapu123@gmail.com'
+SENDER_PASSWORD = 'jboyybnwoavglvfp'
+
+RECIPIENT_EMAILS = {
+
+    796469454314: 'gorantlavinodkumarreddy@gmail.com',
+    659097609678: 'abhibayyavarapu@gmail.com',
+    39382248722: 'pawarrohith3@gmail.com',
+    497443153002: 'praneethvemulakumar3@gmail.com'
+}
+
+def send_email(recipient_email, subject, body):
+    msg = MIMEMultipart()
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = recipient_email
+    msg['Subject'] = subject
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        text = msg.as_string()
+        server.sendmail(SENDER_EMAIL, recipient_email, text)
+        server.quit()
+        print(f'Email sent to {recipient_email}\n')
+    except Exception as e:
+        print(f'Failed to send email to {recipient_email}: {e} \n')
+
+def open_door():
+    p.ChangeDutyCycle(5)
+    time.sleep(1)
+    p.ChangeDutyCycle(7.5)
+
+def close_door():
+    p.ChangeDutyCycle(6.25)
+    time.sleep(2)
+    p.ChangeDutyCycle(5)
+
+# Camera setup
+camera = picamera.PiCamera()
+camera.resolution = (1024, 768)
+camera.brightness = 60
+
+# Load known faces and their encodings
+known_faces = {
+    796469454314: "v.jpeg",  
+    659097609678: "y.jpeg",
+    39382248722: "r.jpeg",
+    497443153002: "pr.jpeg"
+}
+known_face_encodings = {}
+
+for rfid, image_path in known_faces.items():
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"Error loading image {image_path}")
+        continue
+    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    encoding = face_recognition.face_encodings(rgb_img)
+    if encoding:
+        known_face_encodings[rfid] = encoding[0]
+    else:
+        print(f"No face found in image {image_path}")
+
+# RFID reader setup
+reader = SimpleMFRC522()
+
+try:
+    while True:
+        print("Scan RFID")
+        id, text = reader.read()
+        print("RFID ID:", id)
+        print("Text:", text)
+        time.sleep(2)
+
+        if id in known_face_encodings:
+            print("Authorized RFID")
+            time.sleep(1)
+            
+            # Capture image
+            camera.start_preview()
+            time.sleep(5)
+            camera.capture('images/image1.jpeg')
+            camera.stop_preview()
+
+            img = cv2.imread("images/image1.jpeg")
+            if img is None:
+                print("Error loading captured image")
+                continue
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            try:
+                target_encoding = face_recognition.face_encodings(rgb_img)[0]
+            except IndexError:
+                print("No face detected in the image")
+                continue
+
+            # Compare face encoding with the corresponding known face encoding
+            result = face_recognition.compare_faces([known_face_encodings[id]], target_encoding)[0]
+
+            if result:
+                print("Face detected and recognized")
+                print("Opening door")
+                open_door()
+                time.sleep(10)
+                print("Closing Door")
+                close_door()
+                
+                now = datetime.now()
+                date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+                
+                if id == 796469454314:
+                    payload["field{}".format(fieldid_1)] = 1
+                    student_email = RECIPIENT_EMAILS[796469454314]
+                elif id == 659097609678:
+                    payload["field{}".format(fieldid_2)] = 2
+                    student_email = RECIPIENT_EMAILS[659097609678]
+                elif id == 39382248722:
+                    payload["field{}".format(fieldid_3)] = 3
+                    student_email = RECIPIENT_EMAILS[39382248722]
+                elif id == 497443153002:
+                    payload["field{}".format(fieldid_4)] = 4
+                    student_email = RECIPIENT_EMAILS[497443153002]
+                
+                try:
+                    response = requests.post("https://api.thingspeak.com/update.json", params=payload)
+                    response.raise_for_status()
+                    print("Attendance Marked \n")
+                    email_subject = 'Attendance Marked'
+                    email_body = f'Your attendance has been successfully marked on {date_time_str}.'
+                    send_email(student_email, email_subject, email_body)
+                except requests.exceptions.RequestException as e:
+                    print("Error:", e)
+            else:
+                print("Face not matching")
+        else:
+            print("Unauthorized RFID")
+
+except Exception as e:
+    print("Error:", e)
+finally:
+    GPIO.cleanup()
+    p.stop()
